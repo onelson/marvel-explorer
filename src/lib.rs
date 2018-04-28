@@ -45,32 +45,35 @@ struct CharacterDataContainer {
     pub results: Option<Vec<Character>>,
 }
 
-pub struct MarvelClient {
+/// Convert from a `url::Url` to a `hyper::Uri`, and conform the result type to `io::Error`.
+fn url_to_uri(url: &url::Url) -> Result<hyper::Uri, io::Error> {
+    url.as_str()
+        .parse()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+}
+
+type UriResult = Result<hyper::Uri, io::Error>;
+
+struct UriMaker {
     key: String,
     secret: String,
     api_base: String,
     hasher: RefCell<Md5>,
-    core: RefCell<Core>,
-    http: HttpsClient,
 }
 
-impl MarvelClient {
-    pub fn new(key: String, secret: String) -> MarvelClient {
-        let core = Core::new().expect("new core");
-        let handle = core.handle();
-        let http = Client::configure()
-            .connector(hyper_tls::HttpsConnector::new(4, &handle).unwrap())
-            .build(&handle);
-        MarvelClient {
+impl UriMaker {
+    pub fn new(key: String, secret: String, api_base: String) -> UriMaker {
+        UriMaker {
             key,
             secret,
-            api_base: "https://gateway.marvel.com:443/v1/public/".to_owned(),
+            api_base,
             hasher: RefCell::new(Md5::new()),
-            core: RefCell::new(core),
-            http,
         }
     }
 
+    /// The Marvel API authorization scheme requires we produce a hash of our public and
+    /// private keys, in addition to a trace value (a timestamp) which must also be sent in clear
+    /// text as the `ts` parameter (so they can verify our shared secret).
     fn get_hash(&self, ts: &str) -> String {
         let mut hasher = self.hasher.borrow_mut();
         hasher.reset();
@@ -80,6 +83,7 @@ impl MarvelClient {
         hasher.result_str()
     }
 
+    /// Append a path to the api root, as well as the authorization query string params.
     fn build_url(&self, path: &str) -> Result<Url, url::ParseError> {
         let ts = {
             let since_the_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -100,7 +104,55 @@ impl MarvelClient {
         Ok(url)
     }
 
-    fn request_characters(&self, uri: hyper::Uri) -> Box<FutureJsonValue> {
+    /// Lookup character data by name (exact match).
+    pub fn character_by_name_exact(&self, name: &str) -> UriResult {
+        let mut url = self.build_url("characters").unwrap();
+        url.query_pairs_mut().append_pair("name", name);
+        url_to_uri(&url)
+    }
+
+    /// Lookup character data by name (using a "starts with" match).
+    pub fn character_by_name(&self, name_starts_with: &str) -> UriResult {
+        let mut url = self.build_url("characters").unwrap();
+        url.query_pairs_mut()
+            .append_pair("nameStartsWith", name_starts_with);
+        url_to_uri(&url)
+    }
+}
+
+/// The top level interface for interacting with the remote service.
+pub struct MarvelClient {
+    /// provides the means to generate uris with correct authorization info attached.
+    uri_maker: UriMaker,
+    /// tokio core to run our requests in.
+    core: RefCell<Core>,
+    /// hyper http client to build requests with.
+    http: HttpsClient,
+}
+
+impl MarvelClient {
+    pub fn new(key: String, secret: String) -> MarvelClient {
+        let core = Core::new().expect("new core");
+        let handle = core.handle();
+        let http = Client::configure()
+            .connector(hyper_tls::HttpsConnector::new(4, &handle).unwrap())
+            .build(&handle);
+
+        let uri_maker = UriMaker::new(
+            key,
+            secret,
+            "https://gateway.marvel.com:443/v1/public/".to_owned(),
+        );
+
+        MarvelClient {
+            uri_maker,
+            core: RefCell::new(core),
+            http,
+        }
+    }
+
+    /// Given a uri to access, this generates a future json value (to be executed by a core later).
+    fn get_json(&self, uri: hyper::Uri) -> Box<FutureJsonValue> {
         trace!("GET {}", uri);
 
         let f = self.http
@@ -120,14 +172,8 @@ impl MarvelClient {
     }
 
     pub fn search(&self, name_prefix: &str) -> Result<Vec<Character>, io::Error> {
-        let mut url = self.build_url("characters").unwrap();
-        url.query_pairs_mut()
-            .append_pair("nameStartsWith", name_prefix);
-        let uri = url.as_str()
-            .parse()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        let work = self.request_characters(uri).and_then(|value| {
+        let uri = self.uri_maker.character_by_name(name_prefix)?;
+        let work = self.get_json(uri).and_then(|value| {
             let wrapper: CharacterDataWrapper =
                 serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
