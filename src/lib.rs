@@ -122,8 +122,7 @@ impl MarvelClient {
     pub fn search(&self, name_prefix: &str) -> Result<Vec<Character>, io::Error> {
         let mut url = self.build_url("characters").unwrap();
         url.query_pairs_mut()
-            .append_pair("nameStartsWith", name_prefix)
-            .append_pair("limit", "100");
+            .append_pair("nameStartsWith", name_prefix);
         let uri = url.as_str()
             .parse()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
