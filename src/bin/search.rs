@@ -34,6 +34,6 @@ fn main() {
                 table.add_row(row![character.id, character.name, description]);
             }
             table.printstd();
-        },
+        }
     };
 }

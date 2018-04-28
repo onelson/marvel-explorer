@@ -22,8 +22,7 @@ use tokio_core::reactor::Core;
 use url::Url;
 
 type HttpsClient = Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
-
-type FutureCharacterResults = Future<Item = Vec<Character>, Error = io::Error>;
+type FutureJsonValue = Future<Item = serde_json::Value, Error = io::Error>;
 
 #[derive(Debug, Deserialize)]
 pub struct Character {
@@ -101,21 +100,18 @@ impl MarvelClient {
         Ok(url)
     }
 
-    fn request_characters(&self, uri: hyper::Uri) -> Box<FutureCharacterResults> {
+    fn request_characters(&self, uri: hyper::Uri) -> Box<FutureJsonValue> {
         trace!("GET {}", uri);
 
         let f = self.http
             .get(uri)
             .and_then(|res| {
                 trace!("Response: {}", res.status());
-
                 res.body().concat2().and_then(move |body| {
-                    let v: CharacterDataWrapper = serde_json::from_slice(&body)
+                    let value: serde_json::Value = serde_json::from_slice(&body)
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-                    Ok(v.data
-                        .map(move |data: CharacterDataContainer| data.results.unwrap_or(vec![]))
-                        .unwrap_or(vec![]))
+                    Ok(value)
                 })
             })
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
@@ -132,8 +128,16 @@ impl MarvelClient {
             .parse()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        let work = self.request_characters(uri);
-        // core.run() will block until the futures are resolved...
+        let work = self.request_characters(uri).and_then(|value| {
+            let wrapper: CharacterDataWrapper =
+                serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            Ok(wrapper
+                .data
+                .map(move |data: CharacterDataContainer| data.results.unwrap_or(vec![]))
+                .unwrap_or(vec![]))
+        });
+
         self.core.borrow_mut().run(work)
     }
 }
