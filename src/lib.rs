@@ -2,6 +2,11 @@ extern crate crypto;
 extern crate futures;
 extern crate hyper;
 extern crate hyper_tls;
+#[macro_use]
+extern crate log;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde_json;
 extern crate tokio_core;
 extern crate url;
@@ -13,11 +18,33 @@ use crypto::digest::Digest;
 use crypto::md5::Md5;
 use futures::{Future, Stream};
 use hyper::Client;
-use serde_json::Value;
 use tokio_core::reactor::Core;
 use url::Url;
 
 type HttpsClient = Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
+
+type FutureCharacterResults = Future<Item = Vec<Character>, Error = io::Error>;
+
+#[derive(Debug, Deserialize)]
+pub struct Character {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CharacterDataWrapper {
+    pub data: Option<CharacterDataContainer>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CharacterDataContainer {
+    pub offset: Option<i32>,
+    pub limit: Option<i32>,
+    pub total: Option<i32>,
+    pub count: Option<i32>,
+    pub results: Option<Vec<Character>>,
+}
 
 pub struct MarvelClient {
     key: String,
@@ -74,22 +101,38 @@ impl MarvelClient {
         Ok(url)
     }
 
-    pub fn search(&self, name: &str) -> Result<Value, hyper::Error> {
-        let mut url = self.build_url("characters").unwrap();
-        url.query_pairs_mut().append_pair("name", name);
-        let uri = url.as_str().parse()?;
-        println!("GET {}", uri);
-        let work = self.http.get(uri).and_then(|res| {
-            println!("Response: {}", res.status());
+    fn request_characters(&self, uri: hyper::Uri) -> Box<FutureCharacterResults> {
+        trace!("GET {}", uri);
 
-            res.body().concat2().and_then(move |body| {
-                let v: Value = serde_json::from_slice(&body)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                println!("status {}", v["code"]);
-                println!("results {:?}", v["data"]["results"]);
-                Ok(v)
+        let f = self.http
+            .get(uri)
+            .and_then(|res| {
+                trace!("Response: {}", res.status());
+
+                res.body().concat2().and_then(move |body| {
+                    let v: CharacterDataWrapper = serde_json::from_slice(&body)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+                    Ok(v.data
+                        .map(move |data: CharacterDataContainer| data.results.unwrap_or(vec![]))
+                        .unwrap_or(vec![]))
+                })
             })
-        });
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+
+        Box::new(f)
+    }
+
+    pub fn search(&self, name_prefix: &str) -> Result<Vec<Character>, io::Error> {
+        let mut url = self.build_url("characters").unwrap();
+        url.query_pairs_mut()
+            .append_pair("nameStartsWith", name_prefix)
+            .append_pair("limit", "100");
+        let uri = url.as_str()
+            .parse()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        let work = self.request_characters(uri);
         // core.run() will block until the futures are resolved...
         self.core.borrow_mut().run(work)
     }
