@@ -33,16 +33,16 @@ pub struct Character {
 
 #[derive(Debug, Deserialize)]
 struct CharacterDataWrapper {
-    pub data: Option<CharacterDataContainer>,
+    pub data: CharacterDataContainer,
 }
 
 #[derive(Debug, Deserialize)]
 struct CharacterDataContainer {
-    pub offset: Option<i32>,
-    pub limit: Option<i32>,
-    pub total: Option<i32>,
-    pub count: Option<i32>,
-    pub results: Option<Vec<Character>>,
+    pub offset: i32,
+    pub limit: i32,
+    pub total: i32,
+    pub count: i32,
+    pub results: Vec<Character>,
 }
 
 /// Convert from a `url::Url` to a `hyper::Uri`, and conform the result type to `io::Error`.
@@ -177,10 +177,7 @@ impl MarvelClient {
             let wrapper: CharacterDataWrapper =
                 serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-            Ok(wrapper
-                .data
-                .map(move |data: CharacterDataContainer| data.results.unwrap_or(vec![]))
-                .unwrap_or(vec![]))
+            Ok(wrapper.data.results)
         });
 
         self.core.borrow_mut().run(work)
