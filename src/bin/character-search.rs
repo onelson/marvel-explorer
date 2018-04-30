@@ -19,7 +19,7 @@ fn main() {
 
     let name = env::args().nth(1).expect("name");
 
-    match client.search(&name) {
+    match client.search_characters(&name) {
         Err(e) => eprintln!("{:?}", e),
         Ok(results) => {
             // Create the table

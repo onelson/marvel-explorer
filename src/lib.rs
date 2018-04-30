@@ -25,6 +25,14 @@ type HttpsClient = Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector
 type FutureJsonValue = Future<Item = serde_json::Value, Error = io::Error>;
 
 #[derive(Debug, Deserialize)]
+pub struct PaginationDetails {
+    pub offset: i32,
+    pub limit: i32,
+    pub total: i32,
+    pub count: i32,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Character {
     pub id: i64,
     pub name: String,
@@ -32,17 +40,23 @@ pub struct Character {
 }
 
 #[derive(Debug, Deserialize)]
-struct CharacterDataWrapper {
-    pub data: CharacterDataContainer,
+pub struct Event {
+    pub id: i64,
+    pub title: String,
+    pub start: Option<String>,
+    pub description: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct CharacterDataContainer {
-    pub offset: i32,
-    pub limit: i32,
-    pub total: i32,
-    pub count: i32,
-    pub results: Vec<Character>,
+struct DataWrapper<T> {
+    pub data: DataContainer<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DataContainer<T> {
+    #[serde(flatten)]
+    pub page_details: PaginationDetails,
+    pub results: Vec<T>,
 }
 
 /// Convert from a `url::Url` to a `hyper::Uri`, and conform the result type to `io::Error`.
@@ -53,6 +67,8 @@ fn url_to_uri(url: &url::Url) -> Result<hyper::Uri, io::Error> {
 }
 
 type UriResult = Result<hyper::Uri, io::Error>;
+
+const MAX_LIMIT: usize = 100;
 
 struct UriMaker {
     key: String,
@@ -118,6 +134,16 @@ impl UriMaker {
             .append_pair("nameStartsWith", name_starts_with);
         url_to_uri(&url)
     }
+
+    pub fn character_events(&self, character_id: i32, page: usize, limit: usize) -> UriResult {
+        debug_assert!(limit <= MAX_LIMIT);
+        let mut url = self.build_url(&format!("characters/{}/events", character_id))
+            .unwrap();
+        url.query_pairs_mut()
+            .append_pair("limit", &format!("{}", limit))
+            .append_pair("orderBy", "startDate");
+        url_to_uri(&url)
+    }
 }
 
 /// The top level interface for interacting with the remote service.
@@ -171,10 +197,22 @@ impl MarvelClient {
         Box::new(f)
     }
 
-    pub fn search(&self, name_prefix: &str) -> Result<Vec<Character>, io::Error> {
+    pub fn search_characters(&self, name_prefix: &str) -> Result<Vec<Character>, io::Error> {
         let uri = self.uri_maker.character_by_name(name_prefix)?;
         let work = self.get_json(uri).and_then(|value| {
-            let wrapper: CharacterDataWrapper =
+            let wrapper: DataWrapper<Character> =
+                serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            Ok(wrapper.data.results)
+        });
+
+        self.core.borrow_mut().run(work)
+    }
+
+    pub fn events_by_character(&self, character_id: i32) -> Result<Vec<Event>, io::Error> {
+        let uri = self.uri_maker.character_events(character_id, 0, MAX_LIMIT)?;
+        let work = self.get_json(uri).and_then(|value| {
+            let wrapper: DataWrapper<Event> =
                 serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             Ok(wrapper.data.results)
