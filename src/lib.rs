@@ -13,11 +13,12 @@ extern crate url;
 
 use std::cell::RefCell;
 use std::io;
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crypto::digest::Digest;
 use crypto::md5::Md5;
 use futures::{Future, Stream};
-use hyper::Client;
+use hyper::{Client, Uri};
 use tokio_core::reactor::Core;
 use url::Url;
 
@@ -34,14 +35,14 @@ pub struct PaginationDetails {
 
 #[derive(Debug, Deserialize)]
 pub struct Character {
-    pub id: i64,
+    pub id: i32,
     pub name: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
 pub struct Event {
-    pub id: i64,
+    pub id: i32,
     pub title: String,
     pub start: Option<String>,
     pub description: String,
@@ -59,9 +60,9 @@ struct DataContainer<T> {
     pub results: Vec<T>,
 }
 
-/// Convert from a `url::Url` to a `hyper::Uri`, and conform the result type to `io::Error`.
-fn url_to_uri(url: &url::Url) -> Result<hyper::Uri, io::Error> {
-    url.as_str().parse().map_err(to_io_error)
+/// Convert from a `url::Url` to a `hyper::Uri`.
+fn url_to_uri(url: &url::Url) -> Uri {
+    url.as_str().parse().unwrap()
 }
 
 fn to_io_error<E>(err: E) -> io::Error
@@ -70,8 +71,6 @@ where
 {
     io::Error::new(io::ErrorKind::Other, err)
 }
-
-type UriResult = Result<hyper::Uri, io::Error>;
 
 const MAX_LIMIT: usize = 100;
 
@@ -126,27 +125,30 @@ impl UriMaker {
     }
 
     /// Lookup character data by name (exact match).
-    pub fn character_by_name_exact(&self, name: &str) -> UriResult {
+    pub fn character_by_name_exact(&self, name: &str) -> Uri {
         let mut url = self.build_url("characters").unwrap();
         url.query_pairs_mut().append_pair("name", name);
         url_to_uri(&url)
     }
 
     /// Lookup character data by name (using a "starts with" match).
-    pub fn character_by_name(&self, name_starts_with: &str) -> UriResult {
+    pub fn character_by_name(&self, name_starts_with: &str) -> Uri {
         let mut url = self.build_url("characters").unwrap();
         url.query_pairs_mut()
             .append_pair("nameStartsWith", name_starts_with);
         url_to_uri(&url)
     }
 
-    pub fn character_events(&self, character_id: i32, page: usize, limit: usize) -> UriResult {
-        debug_assert!(limit <= MAX_LIMIT);
+    /// Get all the events for a given character.
+    ///
+    /// At the time of writing, there are only around 75 events in the database, meaning we should
+    /// not have to page through the data ever. Setting the limit to the max (currently 100) should
+    /// mean each request made this way should include the full set of events for that character.
+    pub fn character_events(&self, character_id: i32) -> Uri {
         let mut url = self.build_url(&format!("characters/{}/events", character_id))
             .unwrap();
         url.query_pairs_mut()
-            .append_pair("limit", &format!("{}", limit))
-            .append_pair("orderBy", "startDate");
+            .append_pair("limit", &format!("{}", MAX_LIMIT));
         url_to_uri(&url)
     }
 }
@@ -184,12 +186,12 @@ impl MarvelClient {
 
     /// Given a uri to access, this generates a future json value (to be executed by a core later).
     fn get_json(&self, uri: hyper::Uri) -> Box<FutureJsonValue> {
-        trace!("GET {}", uri);
+        debug!("GET {}", uri);
 
         let f = self.http
             .get(uri)
             .and_then(|res| {
-                trace!("Response: {}", res.status());
+                debug!("Response: {}", res.status());
                 res.body().concat2().and_then(move |body| {
                     let value: serde_json::Value =
                         serde_json::from_slice(&body).map_err(to_io_error)?;
@@ -203,7 +205,7 @@ impl MarvelClient {
     }
 
     pub fn search_characters(&self, name_prefix: &str) -> Result<Vec<Character>, io::Error> {
-        let uri = self.uri_maker.character_by_name(name_prefix)?;
+        let uri = self.uri_maker.character_by_name(name_prefix);
         let work = self.get_json(uri).and_then(|value| {
             let wrapper: DataWrapper<Character> =
                 serde_json::from_value(value).map_err(to_io_error)?;
@@ -215,12 +217,66 @@ impl MarvelClient {
     }
 
     pub fn events_by_character(&self, character_id: i32) -> Result<Vec<Event>, io::Error> {
-        let uri = self.uri_maker.character_events(character_id, 0, MAX_LIMIT)?;
+        let uri = self.uri_maker.character_events(character_id);
         let work = self.get_json(uri).and_then(|value| {
             let wrapper: DataWrapper<Event> = serde_json::from_value(value).map_err(to_io_error)?;
 
             Ok(wrapper.data.results)
         });
+
+        self.core.borrow_mut().run(work)
+    }
+
+    pub fn earliest_event_match(&self, name1: &str, name2: &str) -> Result<Option<Event>, io::Error> {
+        let id_lookup_1 = self.uri_maker.character_by_name_exact(name1);
+        let id_lookup_2 = self.uri_maker.character_by_name_exact(name2);
+
+
+        let id1 = self.get_json(id_lookup_1).and_then(|value| {
+
+            let wrapper: DataWrapper<Character> =
+                serde_json::from_value(value).map_err(to_io_error)?;
+            Ok(wrapper.data.results[0].id)
+
+        }).and_then(|id| {
+
+            let uri = self.uri_maker.character_events(id);
+            self.get_json(uri)
+
+        }).and_then(|value| {
+
+            let wrapper: DataWrapper<Event> = serde_json::from_value(value).map_err(to_io_error)?;
+            let result_set: HashSet<Event> = wrapper.data.results.iter().cloned().collect();
+            Ok(result_set)
+
+        });
+
+        let id2 = self.get_json(id_lookup_2).and_then(|value| {
+
+            let wrapper: DataWrapper<Character> =
+                serde_json::from_value(value).map_err(to_io_error)?;
+            Ok(wrapper.data.results[0].id)
+
+        }).and_then(|id| {
+
+            let uri = self.uri_maker.character_events(id);
+            self.get_json(uri)
+
+
+        }).and_then(|value| {
+
+            let wrapper: DataWrapper<Event> = serde_json::from_value(value).map_err(to_io_error)?;
+            let result_set: HashSet<Event> = wrapper.data.results.iter().cloned().collect();
+            Ok(result_set)
+
+        });
+
+        let work = id1.join(id2).and_then(|(events1, events2)| {
+            let intersection: HashSet<Event> = events1.intersection(&events2).cloned().collect();
+            let maybe: Option<Event> = intersection.iter().min_by_key(|ref x| &x.start).map(|x| x.clone());
+            Ok(maybe)
+        });
+
 
         self.core.borrow_mut().run(work)
     }
