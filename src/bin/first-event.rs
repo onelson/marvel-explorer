@@ -1,10 +1,9 @@
 extern crate dotenv;
-extern crate marvel_explorer;
 extern crate env_logger;
+extern crate marvel_explorer;
 use std::env;
 use dotenv::dotenv;
 use marvel_explorer::MarvelClient;
-
 
 fn main() {
     env_logger::init();

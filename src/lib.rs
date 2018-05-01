@@ -227,56 +227,65 @@ impl MarvelClient {
         self.core.borrow_mut().run(work)
     }
 
-    pub fn earliest_event_match(&self, name1: &str, name2: &str) -> Result<Option<Event>, io::Error> {
-        let id_lookup_1 = self.uri_maker.character_by_name_exact(name1);
-        let id_lookup_2 = self.uri_maker.character_by_name_exact(name2);
+    pub fn earliest_event_match(
+        &self,
+        name1: &str,
+        name2: &str,
+    ) -> Result<Option<Event>, io::Error> {
+        // While possible to have this closure be an actual function, you'll likely begin to run
+        // into lifetime issues around the lifetimes of args to each subsequent hop in the chain.
+        // The borrow checker seems to be satisfied if this all happens within the same scope where
+        // the futures are sent into the core for execution, however.
+        let name_to_event_set = |name: String| {
+            let id_lookup = self.uri_maker.character_by_name_exact(&name);
+            self.get_json(id_lookup)
+                .and_then(move |characters_resp| {
+                    // In this closure, we're returning a Result to factor in the potential
+                    // json parse failure, or the fact that maybe the exact name doesn't exist in
+                    // the database.
+                    // The `move` is required on this closure to keep `name` alive so we can give
+                    // nice error output showing which name lookup failed.
+                    let wrapper: DataWrapper<Character> =
+                        serde_json::from_value(characters_resp).map_err(to_io_error)?;
 
+                    match wrapper.data.results.first() {
+                        Some(character) => Ok(character.id),
+                        None => Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("Character `{}` Not Found", name),
+                        )),
+                    }
+                })
+                .and_then(|id| {
+                    let uri = self.uri_maker.character_events(id);
+                    // return a future from a future and the next link in the chain will wait until
+                    // this inner-future resolves
+                    self.get_json(uri)
+                })
+                .and_then(|events_resp| {
+                    // response from the call to `self.get_json()` above.
+                    let wrapper: DataWrapper<Event> =
+                        serde_json::from_value(events_resp).map_err(to_io_error)?;
+                    let result_set: HashSet<Event> = wrapper.data.results.iter().cloned().collect();
+                    Ok(result_set)
+                })
+        };
 
-        let id1 = self.get_json(id_lookup_1).and_then(|value| {
-
-            let wrapper: DataWrapper<Character> =
-                serde_json::from_value(value).map_err(to_io_error)?;
-            Ok(wrapper.data.results[0].id)
-
-        }).and_then(|id| {
-
-            let uri = self.uri_maker.character_events(id);
-            self.get_json(uri)
-
-        }).and_then(|value| {
-
-            let wrapper: DataWrapper<Event> = serde_json::from_value(value).map_err(to_io_error)?;
-            let result_set: HashSet<Event> = wrapper.data.results.iter().cloned().collect();
-            Ok(result_set)
-
-        });
-
-        let id2 = self.get_json(id_lookup_2).and_then(|value| {
-
-            let wrapper: DataWrapper<Character> =
-                serde_json::from_value(value).map_err(to_io_error)?;
-            Ok(wrapper.data.results[0].id)
-
-        }).and_then(|id| {
-
-            let uri = self.uri_maker.character_events(id);
-            self.get_json(uri)
-
-
-        }).and_then(|value| {
-
-            let wrapper: DataWrapper<Event> = serde_json::from_value(value).map_err(to_io_error)?;
-            let result_set: HashSet<Event> = wrapper.data.results.iter().cloned().collect();
-            Ok(result_set)
-
-        });
-
-        let work = id1.join(id2).and_then(|(events1, events2)| {
-            let intersection: HashSet<Event> = events1.intersection(&events2).cloned().collect();
-            let maybe: Option<Event> = intersection.iter().min_by_key(|ref x| &x.start).map(|x| x.clone());
-            Ok(maybe)
-        });
-
+        // In this case, `work` is a graph of futures:
+        // * The pipeline defined in the closure above (`name_to_event_set`) runs twice in parallel
+        // * When both pipelines complete, the resolved values are then passed into the `and_then`
+        //   continuation where we compute the intersection of the two sets for our final result.
+        let work = name_to_event_set(name1.to_owned())
+            .join(name_to_event_set(name2.to_owned()))
+            .and_then(|(events1, events2)| {
+                let intersection: HashSet<Event> =
+                    events1.intersection(&events2).cloned().collect();
+                let maybe: Option<Event> = intersection
+                    .iter()
+                    .min_by_key(|ref x| &x.start)
+                    .map(|x| x.clone());
+                Ok(maybe)
+            });
 
         self.core.borrow_mut().run(work)
     }
