@@ -61,9 +61,14 @@ struct DataContainer<T> {
 
 /// Convert from a `url::Url` to a `hyper::Uri`, and conform the result type to `io::Error`.
 fn url_to_uri(url: &url::Url) -> Result<hyper::Uri, io::Error> {
-    url.as_str()
-        .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    url.as_str().parse().map_err(to_io_error)
+}
+
+fn to_io_error<E>(err: E) -> io::Error
+where
+    E: Into<Box<std::error::Error + Send + Sync>>,
+{
+    io::Error::new(io::ErrorKind::Other, err)
 }
 
 type UriResult = Result<hyper::Uri, io::Error>;
@@ -186,13 +191,13 @@ impl MarvelClient {
             .and_then(|res| {
                 trace!("Response: {}", res.status());
                 res.body().concat2().and_then(move |body| {
-                    let value: serde_json::Value = serde_json::from_slice(&body)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&body).map_err(to_io_error)?;
 
                     Ok(value)
                 })
             })
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+            .map_err(to_io_error);
 
         Box::new(f)
     }
@@ -201,7 +206,7 @@ impl MarvelClient {
         let uri = self.uri_maker.character_by_name(name_prefix)?;
         let work = self.get_json(uri).and_then(|value| {
             let wrapper: DataWrapper<Character> =
-                serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                serde_json::from_value(value).map_err(to_io_error)?;
 
             Ok(wrapper.data.results)
         });
@@ -212,8 +217,7 @@ impl MarvelClient {
     pub fn events_by_character(&self, character_id: i32) -> Result<Vec<Event>, io::Error> {
         let uri = self.uri_maker.character_events(character_id, 0, MAX_LIMIT)?;
         let work = self.get_json(uri).and_then(|value| {
-            let wrapper: DataWrapper<Event> =
-                serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let wrapper: DataWrapper<Event> = serde_json::from_value(value).map_err(to_io_error)?;
 
             Ok(wrapper.data.results)
         });
