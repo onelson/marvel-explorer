@@ -262,11 +262,12 @@ impl MarvelClient {
                     // this inner-future resolves
                     self.get_json(uri)
                 })
-                .and_then(|events_resp| {
-                    // response from the call to `self.get_json()` above.
+                .and_then(|events_resp| { // response from the call to `self.get_json()` above.
                     let wrapper: DataWrapper<Event> =
                         serde_json::from_value(events_resp).map_err(to_io_error)?;
-                    let result_set: HashSet<Event> = wrapper.data.results.iter().cloned().collect();
+                    // Using `into_iter()` here allows us to "move" the `Event` instances
+                    // from the Vec into the `HashSet` without copying.
+                    let result_set: HashSet<Event> = wrapper.data.results.into_iter().collect();
                     Ok(result_set)
                 })
         };
@@ -278,13 +279,10 @@ impl MarvelClient {
         let work = name_to_event_set(name1.to_owned())
             .join(name_to_event_set(name2.to_owned()))
             .and_then(|(events1, events2)| {
-                let intersection: HashSet<Event> =
-                    events1.intersection(&events2).cloned().collect();
-                let maybe: Option<Event> = intersection
-                    .iter()
-                    .min_by_key(|ref x| &x.start)
+                let maybe_event: Option<Event> = events1.intersection(&events2)
+                    .min_by_key(|x| &x.start)
                     .map(|x| x.clone());
-                Ok(maybe)
+                Ok(maybe_event)
             });
 
         self.core.borrow_mut().run(work)
