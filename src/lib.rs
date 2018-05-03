@@ -60,11 +60,6 @@ struct DataContainer<T> {
     pub results: Vec<T>,
 }
 
-/// Convert from a `url::Url` to a `hyper::Uri`.
-fn url_to_uri(url: &url::Url) -> Uri {
-    url.as_str().parse().unwrap()
-}
-
 fn to_io_error<E>(err: E) -> io::Error
 where
     E: Into<Box<std::error::Error + Send + Sync>>,
@@ -103,6 +98,11 @@ impl UriMaker {
         hasher.result_str()
     }
 
+    /// Convert from a `url::Url` to a `hyper::Uri`.
+    fn url_to_uri(url: &url::Url) -> Uri {
+        url.as_str().parse().unwrap()
+    }
+
     /// Append a path to the api root, as well as the authorization query string params.
     fn build_url(&self, path: &str) -> Result<Url, url::ParseError> {
         let ts = {
@@ -113,12 +113,12 @@ impl UriMaker {
 
             format!("{}", ms)
         };
-        let hash = &self.get_hash(&ts);
+        let hash = self.get_hash(&ts);
         let mut url = Url::parse(&self.api_base)?.join(path)?;
 
         url.query_pairs_mut()
             .append_pair("ts", &ts)
-            .append_pair("hash", hash)
+            .append_pair("hash", &hash)
             .append_pair("apikey", &self.key);
 
         Ok(url)
@@ -128,7 +128,7 @@ impl UriMaker {
     pub fn character_by_name_exact(&self, name: &str) -> Uri {
         let mut url = self.build_url("characters").unwrap();
         url.query_pairs_mut().append_pair("name", name);
-        url_to_uri(&url)
+        Self::url_to_uri(&url)
     }
 
     /// Lookup character data by name (using a "starts with" match).
@@ -136,7 +136,7 @@ impl UriMaker {
         let mut url = self.build_url("characters").unwrap();
         url.query_pairs_mut()
             .append_pair("nameStartsWith", name_starts_with);
-        url_to_uri(&url)
+        Self::url_to_uri(&url)
     }
 
     /// Get all the events for a given character.
@@ -149,7 +149,7 @@ impl UriMaker {
             .unwrap();
         url.query_pairs_mut()
             .append_pair("limit", &format!("{}", MAX_LIMIT));
-        url_to_uri(&url)
+        Self::url_to_uri(&url)
     }
 }
 
