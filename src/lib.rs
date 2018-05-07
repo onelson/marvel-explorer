@@ -19,6 +19,7 @@ use crypto::digest::Digest;
 use crypto::md5::Md5;
 use futures::{Future, Stream};
 use hyper::{Client, Uri};
+use hyper_tls::HttpsConnector;
 use tokio_core::reactor::Core;
 use url::Url;
 
@@ -165,11 +166,16 @@ pub struct MarvelClient {
 
 impl MarvelClient {
     pub fn new(key: String, secret: String) -> MarvelClient {
-        let core = Core::new().expect("new core");
-        let handle = core.handle();
-        let http = Client::configure()
-            .connector(hyper_tls::HttpsConnector::new(4, &handle).unwrap())
-            .build(&handle);
+        let core = Core::new().unwrap();
+
+        let http = {
+            let handle = core.handle();
+            let connector = HttpsConnector::new(4, &handle).unwrap();
+
+            Client::configure()
+                .connector(connector)
+                .build(&handle)
+        };
 
         let uri_maker = UriMaker::new(
             key,
