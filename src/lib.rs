@@ -68,8 +68,6 @@ where
     io::Error::new(io::ErrorKind::Other, err)
 }
 
-const MAX_LIMIT: usize = 100;
-
 struct UriMaker {
     key: String,
     secret: String,
@@ -148,8 +146,7 @@ impl UriMaker {
     pub fn character_events(&self, character_id: i32) -> Uri {
         let mut url = self.build_url(&format!("characters/{}/events", character_id))
             .unwrap();
-        url.query_pairs_mut()
-            .append_pair("limit", &format!("{}", MAX_LIMIT));
+        url.query_pairs_mut().append_pair("limit", "100");
         Self::url_to_uri(&url)
     }
 }
