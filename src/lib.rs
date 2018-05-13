@@ -11,20 +11,20 @@ extern crate serde_json;
 extern crate tokio_core;
 extern crate url;
 
-use std::cell::RefCell;
-use std::io;
-use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 use crypto::digest::Digest;
 use crypto::md5::Md5;
 use futures::{Future, Stream};
 use hyper::{Client, Uri};
 use hyper_tls::HttpsConnector;
+use serde_json::Value as JsValue;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::io;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_core::reactor::Core;
 use url::Url;
 
 type HttpsClient = Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
-type FutureJsonValue = Future<Item = serde_json::Value, Error = io::Error>;
 
 #[derive(Debug, Deserialize)]
 pub struct PaginationDetails {
@@ -172,9 +172,7 @@ impl MarvelClient {
             let handle = core.handle();
             let connector = HttpsConnector::new(4, &handle).unwrap();
 
-            Client::configure()
-                .connector(connector)
-                .build(&handle)
+            Client::configure().connector(connector).build(&handle)
         };
 
         let uri_maker = UriMaker::new(
@@ -191,7 +189,7 @@ impl MarvelClient {
     }
 
     /// Given a uri to access, this generates a future json value (to be executed by a core later).
-    fn get_json(&self, uri: hyper::Uri) -> Box<FutureJsonValue> {
+    fn get_json(&self, uri: hyper::Uri) -> Box<Future<Item = JsValue, Error = io::Error>> {
         debug!("GET {}", uri);
 
         let f = self.http
@@ -268,7 +266,8 @@ impl MarvelClient {
                     // this inner-future resolves
                     self.get_json(uri)
                 })
-                .and_then(|events_resp| { // response from the call to `self.get_json()` above.
+                .and_then(|events_resp| {
+                    // response from the call to `self.get_json()` above.
                     let wrapper: DataWrapper<Event> =
                         serde_json::from_value(events_resp).map_err(to_io_error)?;
                     // Using `into_iter()` here allows us to "move" the `Event` instances
@@ -285,7 +284,8 @@ impl MarvelClient {
         let work = name_to_event_set(name1.to_owned())
             .join(name_to_event_set(name2.to_owned()))
             .and_then(|(events1, events2)| {
-                let maybe_event: Option<Event> = events1.intersection(&events2)
+                let maybe_event: Option<Event> = events1
+                    .intersection(&events2)
                     .min_by_key(|x| &x.start)
                     .map(|x| x.clone());
                 Ok(maybe_event)

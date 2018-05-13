@@ -3,11 +3,11 @@ extern crate marvel_explorer;
 #[macro_use]
 extern crate prettytable;
 
-use std::env;
 use dotenv::dotenv;
+use marvel_explorer::MarvelClient;
 use prettytable::Table;
 use prettytable::format;
-use marvel_explorer::MarvelClient;
+use std::env;
 
 fn format_description(event: &marvel_explorer::Event) -> String {
     // TODO: come up with a clever way to add newlines at an interval to wrap long text.
