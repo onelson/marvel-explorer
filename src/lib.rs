@@ -186,10 +186,10 @@ impl MarvelClient {
     }
 
     /// Given a uri to access, this generates a future json value (to be executed by a core later).
-    fn get_json(&self, uri: hyper::Uri) -> Box<Future<Item = JsValue, Error = io::Error>> {
+    fn get_json(&self, uri: hyper::Uri) -> impl Future<Item = JsValue, Error = io::Error> {
         debug!("GET {}", uri);
 
-        let f = self.http
+        self.http
             .get(uri)
             .and_then(|res| {
                 debug!("Response: {}", res.status());
@@ -200,9 +200,7 @@ impl MarvelClient {
                     Ok(value)
                 })
             })
-            .map_err(to_io_error);
-
-        Box::new(f)
+            .map_err(to_io_error)
     }
 
     pub fn search_characters(&self, name_prefix: &str) -> Result<Vec<Character>, io::Error> {
